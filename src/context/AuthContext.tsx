@@ -2,324 +2,300 @@
 
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { UserProfile, UserRole } from "@/types";
-import { DEMO_ADMIN, MOCK_USER_FIZA } from "@/lib/mock-data";
-import { getSupabaseClient, isSupabaseConfigured } from "@/lib/supabase/client";
+import { getSupabaseClient } from "@/lib/supabase/client";
 
 interface AuthContextType {
   user: UserProfile | null;
   role: UserRole;
   isLoading: boolean;
-  isSupabaseMode: boolean;
-  login: (email: string, password?: string, requestedRole?: UserRole) => Promise<{ success: boolean; error?: string }>;
+  login: (
+    email: string,
+    password: string
+  ) => Promise<{ success: boolean; error?: string }>;
   register: (data: {
     fullName: string;
-    studentId?: string;
+    studentId: string;
     email: string;
-    password?: string;
-    role?: UserRole;
-    department?: string;
-    phone?: string;
-  }) => Promise<{ success: boolean; error?: string }>;
+    password: string;
+  }) => Promise<{
+    success: boolean;
+    error?: string;
+    requiresEmailConfirmation?: boolean;
+    message?: string;
+  }>;
   logout: () => Promise<void>;
-  switchDemoRole: (role: UserRole) => void;
+  refreshProfile: () => Promise<void>;
 }
 
 const AuthContext = createContext<AuthContextType | undefined>(undefined);
 
-const LOCAL_USER_KEY = "campuscare_auth_session_user";
-const REGISTERED_USERS_KEY = "campuscare_registered_users";
-
-export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
+export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({
+  children,
+}) => {
   const [user, setUser] = useState<UserProfile | null>(null);
   const [isLoading, setIsLoading] = useState(true);
-  const isSupabaseMode = isSupabaseConfigured();
 
-  // Load session on startup: does NOT auto-login if no active session
+  // Helper to fetch user profile from public.profiles table
+  const fetchProfile = async (
+    userId: string,
+    userEmail: string,
+    metadata?: Record<string, any>
+  ): Promise<UserProfile> => {
+    const supabase = getSupabaseClient();
+
+    try {
+      const { data: profile, error } = await supabase
+        .from("profiles")
+        .select("*")
+        .eq("id", userId)
+        .maybeSingle();
+
+      if (!error && profile) {
+        return {
+          id: profile.id,
+          email: profile.email || userEmail,
+          fullName:
+            profile.full_name ||
+            metadata?.full_name ||
+            userEmail.split("@")[0] ||
+            "Student",
+          studentId: profile.student_id || metadata?.student_id || "",
+          role: profile.role || "student",
+          department: profile.department || metadata?.department || "",
+          phone: profile.phone || metadata?.phone || "",
+          avatarUrl: profile.avatar_url || "",
+          createdAt: profile.created_at,
+        };
+      }
+    } catch (err) {
+      console.warn("Could not query public.profiles table:", err);
+    }
+
+    // Fallback if profile row is not yet created by database trigger
+    const fullName =
+      metadata?.full_name || userEmail.split("@")[0] || "Student";
+    const studentId = metadata?.student_id || "";
+
+    // Attempt to upsert profile into public.profiles
+    try {
+      await supabase.from("profiles").upsert(
+        {
+          id: userId,
+          email: userEmail,
+          full_name: fullName,
+          student_id: studentId,
+          role: "student",
+        },
+        { onConflict: "id" }
+      );
+    } catch (e) {
+      // Ignored if RLS or database trigger already handles it
+    }
+
+    return {
+      id: userId,
+      email: userEmail,
+      fullName,
+      studentId,
+      role: "student",
+      department: metadata?.department || "",
+      phone: metadata?.phone || "",
+    };
+  };
+
+  // Initialize session and subscribe to Supabase Auth state changes
   useEffect(() => {
-    const initializeAuth = async () => {
+    let mounted = true;
+    const supabase = getSupabaseClient();
+
+    const initialize = async () => {
       try {
-        if (isSupabaseMode) {
-          const supabase = getSupabaseClient();
-          if (supabase) {
-            const { data: { session } } = await supabase.auth.getSession();
-            if (session?.user) {
-              const { data: profile } = await supabase
-                .from("profiles")
-                .select("*")
-                .eq("id", session.user.id)
-                .single();
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
 
-              if (profile) {
-                setUser({
-                  id: profile.id,
-                  email: profile.email,
-                  fullName: profile.full_name,
-                  role: profile.role,
-                  studentId: profile.student_id,
-                  department: profile.department,
-                  phone: profile.phone,
-                  avatarUrl: profile.avatar_url,
-                  createdAt: profile.created_at,
-                });
-                setIsLoading(false);
-                return;
-              }
-            }
+        if (session?.user && mounted) {
+          const profile = await fetchProfile(
+            session.user.id,
+            session.user.email || "",
+            session.user.user_metadata
+          );
+          if (mounted) {
+            setUser(profile);
           }
-          // Supabase mode with no session
+        } else if (mounted) {
           setUser(null);
-          setIsLoading(false);
-          return;
         }
-
-        // Local storage mode: check if user previously logged in
-        if (typeof window !== "undefined") {
-          const saved = localStorage.getItem(LOCAL_USER_KEY);
-          if (saved) {
-            try {
-              const parsed = JSON.parse(saved);
-              if (parsed && parsed.fullName) {
-                setUser(parsed);
-                setIsLoading(false);
-                return;
-              }
-            } catch (e) {
-              localStorage.removeItem(LOCAL_USER_KEY);
-            }
-          }
-        }
-
-        // Not logged in by default
-        setUser(null);
       } catch (err) {
-        console.error("Auth init error:", err);
-        setUser(null);
+        console.error("Auth session load error:", err);
+        if (mounted) setUser(null);
       } finally {
-        setIsLoading(false);
+        if (mounted) setIsLoading(false);
       }
     };
 
-    initializeAuth();
-  }, [isSupabaseMode]);
+    initialize();
 
-  // Login handler
+    // Listen to real-time auth state events (SIGNED_IN, SIGNED_OUT, TOKEN_REFRESHED)
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange(async (event, session) => {
+      if (!mounted) return;
+
+      if (event === "SIGNED_OUT" || !session) {
+        setUser(null);
+        setIsLoading(false);
+      } else if (session?.user) {
+        const profile = await fetchProfile(
+          session.user.id,
+          session.user.email || "",
+          session.user.user_metadata
+        );
+        if (mounted) {
+          setUser(profile);
+          setIsLoading(false);
+        }
+      }
+    });
+
+    return () => {
+      mounted = false;
+      subscription.unsubscribe();
+    };
+  }, []);
+
+  // Supabase Auth Login
   const login = async (
     email: string,
-    password?: string,
-    requestedRole: UserRole = "student"
+    password: string
   ): Promise<{ success: boolean; error?: string }> => {
     setIsLoading(true);
+    const supabase = getSupabaseClient();
 
-    if (isSupabaseMode) {
-      const supabase = getSupabaseClient();
-      if (supabase && password) {
-        const { data, error } = await supabase.auth.signInWithPassword({
-          email,
-          password,
-        });
+    try {
+      const { data, error } = await supabase.auth.signInWithPassword({
+        email: email.trim(),
+        password,
+      });
 
-        if (error) {
-          setIsLoading(false);
-          return { success: false, error: error.message };
+      if (error) {
+        setIsLoading(false);
+        // User-friendly handling for unconfirmed emails
+        if (
+          error.message.toLowerCase().includes("email not confirmed") ||
+          error.message.toLowerCase().includes("confirm your email")
+        ) {
+          return {
+            success: false,
+            error:
+              "Email confirmation required. Please check your inbox and verify your email before logging in.",
+          };
         }
-
-        if (data.user) {
-          const { data: profile } = await supabase
-            .from("profiles")
-            .select("*")
-            .eq("id", data.user.id)
-            .single();
-
-          if (profile) {
-            const loggedInUser: UserProfile = {
-              id: profile.id,
-              email: profile.email,
-              fullName: profile.full_name,
-              role: profile.role,
-              studentId: profile.student_id,
-              department: profile.department,
-              phone: profile.phone,
-              avatarUrl: profile.avatar_url,
-              createdAt: profile.created_at,
-            };
-            setUser(loggedInUser);
-            localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(loggedInUser));
-            setIsLoading(false);
-            return { success: true };
-          }
-        }
+        return { success: false, error: error.message };
       }
-    }
 
-    // Local / Testing login
-    const cleanEmail = email.trim().toLowerCase();
-
-    // 1. Check if user was registered locally
-    if (typeof window !== "undefined") {
-      const registeredRaw = localStorage.getItem(REGISTERED_USERS_KEY);
-      if (registeredRaw) {
-        try {
-          const registeredUsers: (UserProfile & { password?: string })[] = JSON.parse(registeredRaw);
-          const found = registeredUsers.find((u) => u.email.toLowerCase() === cleanEmail);
-          if (found) {
-            if (password && found.password && found.password !== password) {
-              setIsLoading(false);
-              return { success: false, error: "Incorrect password entered." };
-            }
-
-            const { password: _, ...userProfile } = found;
-            setUser(userProfile);
-            localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(userProfile));
-            setIsLoading(false);
-            return { success: true };
-          }
-        } catch (e) {
-          console.error("Error reading registered users:", e);
-        }
+      if (data.user) {
+        const profile = await fetchProfile(
+          data.user.id,
+          data.user.email || email,
+          data.user.user_metadata
+        );
+        setUser(profile);
+        setIsLoading(false);
+        return { success: true };
       }
-    }
 
-    // 2. Check if logging in as Fiza (temporary local mock user for testing)
-    if (cleanEmail === "fiza@student.campus.edu" || cleanEmail.startsWith("fiza")) {
-      setUser(MOCK_USER_FIZA);
-      localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(MOCK_USER_FIZA));
       setIsLoading(false);
-      return { success: true };
-    }
-
-    // 3. Check if logging in as Admin
-    if (requestedRole === "admin" || cleanEmail.includes("admin")) {
-      setUser(DEMO_ADMIN);
-      localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(DEMO_ADMIN));
+      return { success: false, error: "Failed to retrieve user session." };
+    } catch (err: any) {
       setIsLoading(false);
-      return { success: true };
+      return {
+        success: false,
+        error: err.message || "An unexpected error occurred during login.",
+      };
     }
-
-    // 4. Default dynamic local mock user for any entered email/name
-    const namePart = email.split("@")[0] || "Student";
-    const displayName = namePart.charAt(0).toUpperCase() + namePart.slice(1);
-
-    const dynamicUser: UserProfile = {
-      id: `usr_local_${Date.now()}`,
-      email: email.trim(),
-      fullName: displayName,
-      role: requestedRole || "student",
-      studentId: "STU" + Math.floor(1000 + Math.random() * 9000),
-      department: "Faculty of Computing & Informatics",
-      createdAt: new Date().toISOString(),
-    };
-
-    setUser(dynamicUser);
-    localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(dynamicUser));
-    setIsLoading(false);
-    return { success: true };
   };
 
-  // Register handler
+  // Supabase Auth Registration
   const register = async (data: {
     fullName: string;
-    studentId?: string;
+    studentId: string;
     email: string;
-    password?: string;
-    role?: UserRole;
-    department?: string;
-    phone?: string;
-  }): Promise<{ success: boolean; error?: string }> => {
+    password: string;
+  }): Promise<{
+    success: boolean;
+    error?: string;
+    requiresEmailConfirmation?: boolean;
+    message?: string;
+  }> => {
     setIsLoading(true);
+    const supabase = getSupabaseClient();
 
-    const userRole: UserRole = data.role || "student";
-
-    if (isSupabaseMode) {
-      const supabase = getSupabaseClient();
-      if (supabase && data.password) {
-        const { data: authData, error } = await supabase.auth.signUp({
-          email: data.email,
-          password: data.password,
-          options: {
-            data: {
-              full_name: data.fullName,
-              role: userRole,
-              student_id: data.studentId,
-              department: data.department,
-              phone: data.phone,
-            },
+    try {
+      const { data: authData, error } = await supabase.auth.signUp({
+        email: data.email.trim(),
+        password: data.password,
+        options: {
+          data: {
+            full_name: data.fullName.trim(),
+            student_id: data.studentId.trim(),
+            role: "student",
           },
-        });
+        },
+      });
 
-        if (error) {
-          setIsLoading(false);
-          return { success: false, error: error.message };
-        }
-
-        if (authData.user) {
-          const newUser: UserProfile = {
-            id: authData.user.id,
-            email: data.email,
-            fullName: data.fullName,
-            role: userRole,
-            studentId: data.studentId,
-            department: data.department,
-            phone: data.phone,
-            createdAt: new Date().toISOString(),
-          };
-          setUser(newUser);
-          localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(newUser));
-          setIsLoading(false);
-          return { success: true };
-        }
+      if (error) {
+        setIsLoading(false);
+        return { success: false, error: error.message };
       }
-    }
 
-    // Local registration
-    const newUser: UserProfile & { password?: string } = {
-      id: `usr_${Date.now()}`,
-      email: data.email.trim(),
-      fullName: data.fullName.trim(),
-      role: userRole,
-      studentId: data.studentId?.trim() || "STU" + Math.floor(1000 + Math.random() * 9000),
-      department: data.department || "Faculty of Computing & Informatics",
-      phone: data.phone || "",
-      password: data.password,
-      createdAt: new Date().toISOString(),
-    };
-
-    if (typeof window !== "undefined") {
-      try {
-        const registeredRaw = localStorage.getItem(REGISTERED_USERS_KEY);
-        const registeredList = registeredRaw ? JSON.parse(registeredRaw) : [];
-        registeredList.push(newUser);
-        localStorage.setItem(REGISTERED_USERS_KEY, JSON.stringify(registeredList));
-      } catch (e) {
-        console.error("Error saving registered user locally:", e);
+      // Check if immediate session was returned or if email confirmation is required
+      if (authData.session && authData.user) {
+        const profile = await fetchProfile(
+          authData.user.id,
+          authData.user.email || data.email,
+          authData.user.user_metadata
+        );
+        setUser(profile);
+        setIsLoading(false);
+        return { success: true };
       }
-    }
 
-    const { password: _, ...sessionUser } = newUser;
-    setUser(sessionUser);
-    localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(sessionUser));
-    setIsLoading(false);
-    return { success: true };
+      // If session is null, Supabase requires email verification
+      setIsLoading(false);
+      return {
+        success: true,
+        requiresEmailConfirmation: true,
+        message:
+          "Account created successfully! Please check your email inbox to confirm your email before signing in.",
+      };
+    } catch (err: any) {
+      setIsLoading(false);
+      return {
+        success: false,
+        error: err.message || "Registration failed. Please try again.",
+      };
+    }
   };
 
+  // Real Supabase Sign Out
   const logout = async () => {
-    if (isSupabaseMode) {
-      const supabase = getSupabaseClient();
-      if (supabase) {
-        await supabase.auth.signOut();
-      }
-    }
-    setUser(null);
-    if (typeof window !== "undefined") {
-      localStorage.removeItem(LOCAL_USER_KEY);
+    setIsLoading(true);
+    const supabase = getSupabaseClient();
+    try {
+      await supabase.auth.signOut();
+    } catch (err) {
+      console.error("Sign out error:", err);
+    } finally {
+      setUser(null);
+      setIsLoading(false);
     }
   };
 
-  const switchDemoRole = (newRole: UserRole) => {
-    const targetUser = newRole === "admin" ? DEMO_ADMIN : MOCK_USER_FIZA;
-    setUser(targetUser);
-    if (typeof window !== "undefined") {
-      localStorage.setItem(LOCAL_USER_KEY, JSON.stringify(targetUser));
-    }
+  const refreshProfile = async () => {
+    if (!user) return;
+    const profile = await fetchProfile(user.id, user.email);
+    setUser(profile);
   };
 
   return (
@@ -328,11 +304,10 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         user,
         role: user?.role || "student",
         isLoading,
-        isSupabaseMode,
         login,
         register,
         logout,
-        switchDemoRole,
+        refreshProfile,
       }}
     >
       {children}

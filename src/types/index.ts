@@ -44,13 +44,16 @@ export interface Complaint {
   title: string;
   category: ComplaintCategory;
   priority: ComplaintPriority;
-  building: string;
-  roomFloor: string;
+  location: string;
+  building?: string;
+  roomFloor?: string;
   locationDetails?: string;
   description: string;
+  photoPath?: string;
   photoUrl?: string;
   status: ComplaintStatus;
   adminRemarks?: string;
+  adminRemark?: string;
   assignedTo?: string;
   resolvedAt?: string;
   createdAt: string;
@@ -71,9 +74,10 @@ export interface SubmitComplaintInput {
   title: string;
   category: ComplaintCategory;
   priority: ComplaintPriority;
-  building: string;
-  roomFloor: string;
-  locationDetails?: string;
+  location: string;
   description: string;
-  photoUrl?: string;
+  photoPath?: string;
+  building?: string;
+  roomFloor?: string;
+  locationDetails?: string;
 }

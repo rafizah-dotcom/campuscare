@@ -1,201 +1,201 @@
-import { Complaint, ComplaintStats, ComplaintStatus, SubmitComplaintInput } from "@/types";
-import { getSupabaseClient, isSupabaseConfigured } from "../supabase/client";
-import { INITIAL_COMPLAINTS } from "../mock-data";
+import {
+  Complaint,
+  ComplaintStats,
+  ComplaintStatus,
+  SubmitComplaintInput,
+} from "@/types";
+import { getSupabaseClient } from "../supabase/client";
 
-const LOCAL_STORAGE_KEY = "campuscare_complaints_v1";
+/**
+ * Uploads a complaint photo to the private Supabase Storage bucket 'complaint-photos'.
+ * Structure: {authenticated_user_id}/{unique_filename}
+ * Returns: Only the storage path (string), to be saved in complaints.photo_path.
+ */
+export const uploadComplaintPhoto = async (
+  userId: string,
+  file: File
+): Promise<string> => {
+  const supabase = getSupabaseClient();
+  const fileExt = file.name.split(".").pop() || "jpg";
+  const uniqueName = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
+  const storagePath = `${userId}/${uniqueName}`;
 
-// Helper to get complaints from localStorage or initial mock data
-const getLocalComplaints = (): Complaint[] => {
-  if (typeof window === "undefined") {
-    return INITIAL_COMPLAINTS;
+  const { data, error } = await supabase.storage
+    .from("complaint-photos")
+    .upload(storagePath, file, {
+      cacheControl: "3600",
+      upsert: false,
+    });
+
+  if (error) {
+    if (
+      error.message.toLowerCase().includes("bucket not found") ||
+      error.message.toLowerCase().includes("not found")
+    ) {
+      throw new Error(
+        "Supabase Storage bucket 'complaint-photos' was not found. Please create the private bucket 'complaint-photos' in your Supabase project."
+      );
+    }
+    throw new Error(`Photo upload failed: ${error.message}`);
   }
+
+  // Return the storage path
+  return storagePath;
+};
+
+/**
+ * Generates a signed URL to securely display photos stored in the private 'complaint-photos' bucket.
+ */
+export const getPhotoSignedUrl = async (
+  photoPath?: string
+): Promise<string | null> => {
+  if (!photoPath) return null;
+
+  // If already a full URL or blob
+  if (
+    photoPath.startsWith("http://") ||
+    photoPath.startsWith("https://") ||
+    photoPath.startsWith("data:")
+  ) {
+    return photoPath;
+  }
+
+  const supabase = getSupabaseClient();
 
   try {
-    const stored = localStorage.getItem(LOCAL_STORAGE_KEY);
-    if (!stored) {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(INITIAL_COMPLAINTS));
-      return INITIAL_COMPLAINTS;
+    const { data, error } = await supabase.storage
+      .from("complaint-photos")
+      .createSignedUrl(photoPath, 3600); // 1-hour expiration
+
+    if (!error && data?.signedUrl) {
+      return data.signedUrl;
     }
-    return JSON.parse(stored);
   } catch (err) {
-    console.error("Failed to parse local complaints:", err);
-    return INITIAL_COMPLAINTS;
+    console.warn("Could not generate signed URL for photo:", err);
   }
-};
 
-// Helper to save complaints to localStorage
-const saveLocalComplaints = (complaints: Complaint[]) => {
-  if (typeof window !== "undefined") {
-    try {
-      localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(complaints));
-    } catch (err) {
-      console.error("Failed to save local complaints:", err);
-    }
-  }
+  return null;
 };
 
 /**
- * Generates a human-friendly ticket ID: CC-YYYY-XXXX
+ * Maps Supabase PostgreSQL complaints row into the Complaint TypeScript interface.
  */
-export const generateTicketId = (): string => {
-  const year = new Date().getFullYear();
-  const randomNum = Math.floor(1000 + Math.random() * 9000);
-  return `CC-${year}-${randomNum}`;
+const mapDatabaseRowToComplaint = (row: any): Complaint => {
+  const locationStr =
+    row.location ||
+    [row.building, row.room_floor, row.location_details]
+      .filter(Boolean)
+      .join(", ") ||
+    "Campus Location";
+
+  // Normalize status casing: "Submitted" | "In Progress" | "Resolved" | "Rejected"
+  let status: ComplaintStatus = "Submitted";
+  if (row.status) {
+    const lower = row.status.toLowerCase().replace(/_/g, " ");
+    if (lower === "in progress") status = "In Progress";
+    else if (lower === "resolved") status = "Resolved";
+    else if (lower === "rejected") status = "Rejected";
+    else status = "Submitted";
+  }
+
+  return {
+    id: row.id,
+    ticketId: row.ticket_id || row.ticketId || row.id.substring(0, 8).toUpperCase(),
+    userId: row.user_id,
+    title: row.title,
+    category: row.category,
+    priority: row.priority || "Medium",
+    location: locationStr,
+    building: row.building || locationStr.split(",")[0] || locationStr,
+    roomFloor: row.room_floor || locationStr.split(",")[1] || "",
+    locationDetails: row.location_details || "",
+    description: row.description,
+    photoPath: row.photo_path || row.photoPath || row.photo_url || undefined,
+    photoUrl: undefined, // Resolved on-demand via getPhotoSignedUrl
+    status,
+    adminRemarks: row.admin_remark || row.admin_remarks || "",
+    adminRemark: row.admin_remark || row.admin_remarks || "",
+    assignedTo: row.assigned_to,
+    resolvedAt: row.resolved_at,
+    createdAt: row.created_at || new Date().toISOString(),
+    updatedAt: row.updated_at || new Date().toISOString(),
+    timeline: row.timeline || [],
+  };
 };
 
 /**
- * Uploads a complaint photo to Supabase Storage or creates a local data URL preview.
+ * Fetches complaints belonging to the authenticated student from Supabase.
  */
-export const uploadComplaintPhoto = async (file: File): Promise<string> => {
+export const getComplaints = async (userId: string): Promise<Complaint[]> => {
+  if (!userId) return [];
   const supabase = getSupabaseClient();
 
-  if (isSupabaseConfigured() && supabase) {
-    const fileExt = file.name.split(".").pop();
-    const fileName = `${Date.now()}-${Math.random().toString(36).substring(2, 9)}.${fileExt}`;
-    const filePath = `complaints/${fileName}`;
+  try {
+    const { data, error } = await supabase
+      .from("complaints")
+      .select("*")
+      .eq("user_id", userId)
+      .order("created_at", { ascending: false });
 
-    const { error: uploadError } = await supabase.storage
-      .from("complaint-attachments")
-      .upload(filePath, file);
-
-    if (uploadError) {
-      console.warn("Supabase storage upload failed, falling back to local preview:", uploadError.message);
-    } else {
-      const { data } = supabase.storage
-        .from("complaint-attachments")
-        .getPublicUrl(filePath);
-
-      if (data?.publicUrl) {
-        return data.publicUrl;
-      }
+    if (error) {
+      console.error("Error fetching complaints from Supabase:", error.message);
+      return [];
     }
-  }
 
-  // Fallback: Read as base64 Data URL for instant preview & offline persistence
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = (err) => reject(err);
-    reader.readAsDataURL(file);
-  });
+    if (!data) return [];
+
+    return data.map((row: any) => mapDatabaseRowToComplaint(row));
+  } catch (err) {
+    console.error("Unexpected error fetching complaints:", err);
+    return [];
+  }
 };
 
 /**
- * Fetches all complaints. Filters by userId if provided.
+ * Fetches a single complaint by Ticket ID or UUID.
  */
-export const getComplaints = async (userId?: string): Promise<Complaint[]> => {
+export const getComplaintById = async (
+  idOrTicketId: string,
+  userId?: string
+): Promise<Complaint | null> => {
   const supabase = getSupabaseClient();
 
-  if (isSupabaseConfigured() && supabase) {
-    try {
-      let query = supabase
-        .from("complaints")
-        .select(`
-          *,
-          timeline:complaint_timeline(*)
-        `)
-        .order("created_at", { ascending: false });
+  try {
+    let query = supabase
+      .from("complaints")
+      .select("*")
+      .or(`id.eq.${idOrTicketId},ticket_id.eq.${idOrTicketId}`);
 
-      if (userId) {
-        query = query.eq("user_id", userId);
-      }
-
-      const { data, error } = await query;
-
-      if (!error && data && data.length > 0) {
-        // Map Supabase snake_case to CamelCase
-        return data.map((item: any) => ({
-          id: item.id,
-          ticketId: item.ticket_id,
-          userId: item.user_id,
-          title: item.title,
-          category: item.category,
-          priority: item.priority,
-          building: item.building,
-          roomFloor: item.room_floor,
-          locationDetails: item.location_details,
-          description: item.description,
-          photoUrl: item.photo_url,
-          status: item.status,
-          adminRemarks: item.admin_remarks,
-          assignedTo: item.assigned_to,
-          resolvedAt: item.resolved_at,
-          createdAt: item.created_at,
-          updatedAt: item.updated_at,
-          timeline: item.timeline || [],
-        }));
-      }
-    } catch (err) {
-      console.warn("Failed fetching from Supabase, falling back to local data:", err);
+    if (userId) {
+      query = query.eq("user_id", userId);
     }
-  }
 
-  // Local storage fallback
-  const all = getLocalComplaints();
-  if (userId) {
-    return all.filter((c) => c.userId === userId);
+    const { data, error } = await query.maybeSingle();
+
+    if (error || !data) {
+      return null;
+    }
+
+    const complaint = mapDatabaseRowToComplaint(data);
+
+    // Resolve private photo signed URL if a photo_path exists
+    if (complaint.photoPath) {
+      complaint.photoUrl = (await getPhotoSignedUrl(complaint.photoPath)) || undefined;
+    }
+
+    return complaint;
+  } catch (err) {
+    console.error("Error retrieving complaint:", err);
+    return null;
   }
-  return all;
 };
 
 /**
- * Fetches a single complaint by ID or Ticket ID.
+ * Calculates complaint metrics for the student dashboard using live Supabase data.
  */
-export const getComplaintById = async (idOrTicket: string): Promise<Complaint | null> => {
-  const supabase = getSupabaseClient();
-
-  if (isSupabaseConfigured() && supabase) {
-    try {
-      const { data, error } = await supabase
-        .from("complaints")
-        .select(`
-          *,
-          timeline:complaint_timeline(*)
-        `)
-        .or(`id.eq.${idOrTicket},ticket_id.eq.${idOrTicket}`)
-        .single();
-
-      if (!error && data) {
-        return {
-          id: data.id,
-          ticketId: data.ticket_id,
-          userId: data.user_id,
-          title: data.title,
-          category: data.category,
-          priority: data.priority,
-          building: data.building,
-          roomFloor: data.room_floor,
-          locationDetails: data.location_details,
-          description: data.description,
-          photoUrl: data.photo_url,
-          status: data.status,
-          adminRemarks: data.admin_remarks,
-          assignedTo: data.assigned_to,
-          resolvedAt: data.resolved_at,
-          createdAt: data.created_at,
-          updatedAt: data.updated_at,
-          timeline: data.timeline || [],
-        };
-      }
-    } catch (err) {
-      console.warn("Supabase fetch single complaint error, falling back:", err);
-    }
-  }
-
-  const all = getLocalComplaints();
-  return (
-    all.find(
-      (c) =>
-        c.id.toLowerCase() === idOrTicket.toLowerCase() ||
-        c.ticketId.toLowerCase() === idOrTicket.toLowerCase()
-    ) || null
-  );
-};
-
-/**
- * Calculates complaint statistics for dashboard cards.
- */
-export const getComplaintStats = async (userId?: string): Promise<ComplaintStats> => {
+export const getComplaintStats = async (
+  userId: string
+): Promise<ComplaintStats> => {
   const complaints = await getComplaints(userId);
 
   return {
@@ -208,167 +208,61 @@ export const getComplaintStats = async (userId?: string): Promise<ComplaintStats
 };
 
 /**
- * Creates and submits a new complaint.
+ * Creates and submits a new complaint into public.complaints.
+ * Saves: user_id, title, category, priority, location, description, photo_path.
+ * The database generates: ticket_id, status, timestamps.
  */
 export const createComplaint = async (
   input: SubmitComplaintInput,
-  userId: string,
-  userName = "Student"
+  userId: string
 ): Promise<Complaint> => {
-  const ticketId = generateTicketId();
-  const now = new Date().toISOString();
+  const supabase = getSupabaseClient();
 
-  const newComplaint: Complaint = {
-    id: `cmp_${Date.now()}`,
-    ticketId,
-    userId,
-    title: input.title,
+  const insertPayload: any = {
+    user_id: userId,
+    title: input.title.trim(),
     category: input.category,
     priority: input.priority || "Medium",
-    building: input.building,
-    roomFloor: input.roomFloor,
-    locationDetails: input.locationDetails || "",
-    description: input.description,
-    photoUrl: input.photoUrl,
-    status: "Submitted",
-    adminRemarks: "Complaint registered. Awaiting facility supervisor assignment.",
-    createdAt: now,
-    updatedAt: now,
-    timeline: [
-      {
-        id: `tl_${Date.now()}_1`,
-        complaintId: `cmp_${Date.now()}`,
-        status: "Submitted",
-        note: `Complaint filed via CampusCare portal. Assigned ticket ${ticketId}.`,
-        actionBy: `${userName} (Student)`,
-        createdAt: now,
-      },
-    ],
+    location: input.location.trim(),
+    description: input.description.trim(),
   };
 
-  const supabase = getSupabaseClient();
-  if (isSupabaseConfigured() && supabase) {
-    try {
-      const { data, error } = await supabase
+  // Save only the storage path into complaints.photo_path
+  if (input.photoPath) {
+    insertPayload.photo_path = input.photoPath;
+  }
+
+  // Insert into public.complaints
+  const { data, error } = await supabase
+    .from("complaints")
+    .insert(insertPayload)
+    .select()
+    .single();
+
+  if (error) {
+    // If ticket_id does not have a default sequence trigger, generate human-readable ticket ID
+    if (
+      error.message.includes("ticket_id") ||
+      error.code === "23502" ||
+      error.message.toLowerCase().includes("not-null")
+    ) {
+      const year = new Date().getFullYear();
+      const randomNum = Math.floor(1000 + Math.random() * 9000);
+      insertPayload.ticket_id = `CC-${year}-${randomNum}`;
+
+      const retry = await supabase
         .from("complaints")
-        .insert({
-          ticket_id: ticketId,
-          user_id: userId,
-          title: input.title,
-          category: input.category,
-          priority: input.priority || "Medium",
-          building: input.building,
-          room_floor: input.roomFloor,
-          location_details: input.locationDetails || null,
-          description: input.description,
-          photo_url: input.photoUrl || null,
-          status: "Submitted",
-          admin_remarks: newComplaint.adminRemarks,
-        })
+        .insert(insertPayload)
         .select()
         .single();
 
-      if (!error && data) {
-        // Also insert timeline record
-        await supabase.from("complaint_timeline").insert({
-          complaint_id: data.id,
-          status: "Submitted",
-          note: `Complaint submitted. Ticket ID: ${data.ticket_id}`,
-          action_by: userName,
-        });
-
-        return {
-          ...newComplaint,
-          id: data.id,
-          ticketId: data.ticket_id,
-        };
+      if (!retry.error && retry.data) {
+        return mapDatabaseRowToComplaint(retry.data);
       }
-    } catch (err) {
-      console.warn("Supabase insert error, saving to local store:", err);
     }
+
+    throw new Error(error.message || "Failed to submit complaint to Supabase.");
   }
 
-  // Save to local storage
-  const all = getLocalComplaints();
-  const updated = [newComplaint, ...all];
-  saveLocalComplaints(updated);
-
-  return newComplaint;
-};
-
-/**
- * Updates a complaint's status and admin remarks.
- * Prepared for the Admin Module to update complaints seamlessly.
- */
-export const updateComplaintStatus = async (
-  complaintId: string,
-  newStatus: ComplaintStatus,
-  adminRemarks?: string,
-  assignedTo?: string,
-  adminName = "Administrator"
-): Promise<Complaint | null> => {
-  const now = new Date().toISOString();
-  const supabase = getSupabaseClient();
-
-  if (isSupabaseConfigured() && supabase) {
-    try {
-      const updates: any = {
-        status: newStatus,
-        updated_at: now,
-      };
-      if (adminRemarks !== undefined) updates.admin_remarks = adminRemarks;
-      if (assignedTo !== undefined) updates.assigned_to = assignedTo;
-      if (newStatus === "Resolved") updates.resolved_at = now;
-
-      const { data, error } = await supabase
-        .from("complaints")
-        .update(updates)
-        .eq("id", complaintId)
-        .select()
-        .single();
-
-      if (!error && data) {
-        await supabase.from("complaint_timeline").insert({
-          complaint_id: complaintId,
-          status: newStatus,
-          note: adminRemarks || `Status changed to ${newStatus}`,
-          action_by: adminName,
-        });
-
-        return getComplaintById(complaintId);
-      }
-    } catch (err) {
-      console.warn("Supabase update error, falling back locally:", err);
-    }
-  }
-
-  // Local update
-  const all = getLocalComplaints();
-  const index = all.findIndex((c) => c.id === complaintId || c.ticketId === complaintId);
-  if (index === -1) return null;
-
-  const target = all[index];
-  const updatedItem: Complaint = {
-    ...target,
-    status: newStatus,
-    adminRemarks: adminRemarks !== undefined ? adminRemarks : target.adminRemarks,
-    assignedTo: assignedTo !== undefined ? assignedTo : target.assignedTo,
-    resolvedAt: newStatus === "Resolved" ? now : target.resolvedAt,
-    updatedAt: now,
-    timeline: [
-      ...(target.timeline || []),
-      {
-        id: `tl_${Date.now()}`,
-        complaintId: target.id,
-        status: newStatus,
-        note: adminRemarks || `Status updated to ${newStatus}`,
-        actionBy: adminName,
-        createdAt: now,
-      },
-    ],
-  };
-
-  all[index] = updatedItem;
-  saveLocalComplaints(all);
-  return updatedItem;
+  return mapDatabaseRowToComplaint(data);
 };

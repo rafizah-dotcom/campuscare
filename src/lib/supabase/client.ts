@@ -1,7 +1,10 @@
 import { createClient, SupabaseClient } from "@supabase/supabase-js";
 
 const supabaseUrl = process.env.NEXT_PUBLIC_SUPABASE_URL || "";
-const supabaseAnonKey = process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY || "";
+const supabasePublishableKey =
+  process.env.NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY ||
+  process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY ||
+  "";
 
 /**
  * Checks whether valid Supabase environment variables are present.
@@ -11,28 +14,29 @@ export const isSupabaseConfigured = (): boolean => {
     typeof supabaseUrl === "string" &&
     supabaseUrl.trim().length > 0 &&
     supabaseUrl.startsWith("http") &&
-    !supabaseUrl.includes("your-project-id") &&
-    typeof supabaseAnonKey === "string" &&
-    supabaseAnonKey.trim().length > 0 &&
-    !supabaseAnonKey.includes("your-anon-key")
+    typeof supabasePublishableKey === "string" &&
+    supabasePublishableKey.trim().length > 0
   );
 };
 
 let clientInstance: SupabaseClient | null = null;
 
 /**
- * Returns a singleton browser Supabase client if configured, or null.
+ * Returns a singleton browser Supabase client.
  */
-export const getSupabaseClient = (): SupabaseClient | null => {
+export const getSupabaseClient = (): SupabaseClient => {
   if (!isSupabaseConfigured()) {
-    return null;
+    throw new Error(
+      "Supabase is not configured. Missing NEXT_PUBLIC_SUPABASE_URL or NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY."
+    );
   }
 
   if (!clientInstance) {
-    clientInstance = createClient(supabaseUrl, supabaseAnonKey, {
+    clientInstance = createClient(supabaseUrl, supabasePublishableKey, {
       auth: {
         persistSession: true,
         autoRefreshToken: true,
+        detectSessionInUrl: true,
       },
     });
   }
