@@ -27,7 +27,6 @@ export const Navbar: React.FC = () => {
     user,
     role,
     logout,
-    isSupabaseMode,
   } = useAuth();
 
   const [mobileMenuOpen, setMobileMenuOpen] =
@@ -67,9 +66,7 @@ export const Navbar: React.FC = () => {
       path === "/complaints" &&
       (
         pathname === "/complaints" ||
-        pathname.startsWith(
-          "/complaints/CC-"
-        )
+        pathname.startsWith("/complaints/CC-")
       )
     ) {
       return true;
@@ -251,22 +248,14 @@ export const Navbar: React.FC = () => {
 
                 {/* SUPABASE STATUS */}
                 <div
-                  className={`flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border ${
-                    isSupabaseMode
-                      ? "bg-emerald-50 text-emerald-700 border-emerald-200"
-                      : "bg-slate-50 text-slate-600 border-slate-200"
-                  }`}
-                  title={
-                    isSupabaseMode
-                      ? "Connected to Supabase"
-                      : "Backend connection unavailable"
-                  }
+                  className="flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border bg-emerald-50 text-emerald-700 border-emerald-200"
+                  title="Connected to Supabase"
                 >
 
                   <Database className="w-3 h-3" />
 
                   <span>
-                   Supabase Live
+                    Supabase Live
                   </span>
 
                 </div>
@@ -312,9 +301,7 @@ export const Navbar: React.FC = () => {
                     <div
                       className="absolute right-0 mt-2 w-64 bg-white rounded-xl shadow-xl border border-slate-100 py-2 z-50"
                       onMouseLeave={() =>
-                        setProfileDropdownOpen(
-                          false
-                        )
+                        setProfileDropdownOpen(false)
                       }
                     >
 
@@ -331,9 +318,7 @@ export const Navbar: React.FC = () => {
                         {user.studentId && (
 
                           <p className="text-[11px] text-indigo-600 font-mono mt-0.5">
-
                             ID: {user.studentId}
-
                           </p>
 
                         )}
@@ -355,9 +340,7 @@ export const Navbar: React.FC = () => {
                           <Link
                             href="/admin"
                             onClick={() =>
-                              setProfileDropdownOpen(
-                                false
-                              )
+                              setProfileDropdownOpen(false)
                             }
                             className="flex items-center gap-2 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 rounded-lg"
                           >
@@ -473,9 +456,7 @@ export const Navbar: React.FC = () => {
               </div>
 
               <span className="text-xs px-2 py-0.5 rounded font-semibold bg-indigo-50 text-indigo-700 border border-indigo-200 uppercase">
-
                 {role}
-
               </span>
 
             </div>
@@ -533,7 +514,7 @@ export const Navbar: React.FC = () => {
 
             <div className="pt-3 border-t border-slate-100 flex items-center justify-between">
 
-              <span className="text-xs text-slate-500">
+              <span className="text-xs text-emerald-600 font-medium">
 
                 Supabase Live
 

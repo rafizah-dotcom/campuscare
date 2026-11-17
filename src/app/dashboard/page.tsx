@@ -84,10 +84,10 @@ export default function StudentDashboard() {
   // Filter complaints for recent list
   const filteredComplaints = complaints.filter((c) => {
     const matchesSearch =
-      c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.ticketId.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.building.toLowerCase().includes(searchQuery.toLowerCase()) ||
-      c.roomFloor.toLowerCase().includes(searchQuery.toLowerCase());
+c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+c.ticketId.toLowerCase().includes(searchQuery.toLowerCase()) ||
+(c.building ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+(c.roomFloor ?? "").toLowerCase().includes(searchQuery.toLowerCase())
 
     const matchesCategory =
       selectedCategory === "All" || c.category === selectedCategory;

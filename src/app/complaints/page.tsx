@@ -67,11 +67,11 @@ export default function ComplaintsListPage() {
   const filtered = complaints
     .filter((c) => {
       const matchesSearch =
-        c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.ticketId.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.building.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        c.roomFloor.toLowerCase().includes(searchQuery.toLowerCase()) ||
-        (c.adminRemarks && c.adminRemarks.toLowerCase().includes(searchQuery.toLowerCase()));
+       c.title.toLowerCase().includes(searchQuery.toLowerCase()) ||
+c.ticketId.toLowerCase().includes(searchQuery.toLowerCase()) ||
+(c.building ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+(c.roomFloor ?? "").toLowerCase().includes(searchQuery.toLowerCase()) ||
+(c.adminRemarks ?? "").toLowerCase().includes(searchQuery.toLowerCase())
 
       const matchesStatus =
         statusFilter === "All" || c.status === statusFilter;

@@ -135,23 +135,31 @@ export default function SubmitComplaintPage() {
         uploadedPhotoUrl = await uploadComplaintPhoto(photoFile);
       }
 
-      const input: SubmitComplaintInput = {
-        title: title.trim(),
-        category,
-        priority,
-        building,
-        roomFloor: roomFloor.trim(),
-        locationDetails: locationDetails.trim() || undefined,
-        description: description.trim(),
-        photoUrl: uploadedPhotoUrl,
-      };
+     const input: SubmitComplaintInput = {
+  title: title.trim(),
+  category,
+  priority,
 
-      const result = await createComplaint(
-        input,
-        user.id,
-        user.fullName
-      );
+  location: [
+    building.trim(),
+    roomFloor.trim(),
+    locationDetails.trim(),
+  ]
+    .filter(Boolean)
+    .join(", "),
 
+  building: building.trim(),
+  roomFloor: roomFloor.trim(),
+  locationDetails: locationDetails.trim() || undefined,
+
+  description: description.trim(),
+  photoPath: uploadedPhotoUrl,
+};
+
+const result = await createComplaint(
+  input,
+  user.id
+);
       setSubmittedTicketId(result.ticketId);
     } catch (err: any) {
       console.error("Submission failed:", err);
