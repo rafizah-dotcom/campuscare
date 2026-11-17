@@ -598,3 +598,115 @@ export const createComplaint = async (
 
   return mapDatabaseRowToComplaint(data);
 };
+/**
+ * ADMIN: Get all complaints from all students.
+ * Supabase RLS will only allow this when the logged-in profile role is admin.
+ */
+export const getAllComplaints = async (): Promise<Complaint[]> => {
+  const supabase = getSupabaseClient();
+
+  const { data, error } = await supabase
+    .from("complaints")
+    .select("*")
+    .order("created_at", { ascending: false });
+
+  if (error) {
+    console.error("Error fetching all complaints:", error.message);
+    throw new Error(error.message);
+  }
+
+  if (!data) {
+    return [];
+  }
+
+  return data.map((row: any) =>
+    mapDatabaseRowToComplaint(row)
+  );
+};
+
+
+/**
+ * ADMIN: Update complaint status, remarks and technician.
+ */
+export const updateComplaintStatus = async (
+  complaintId: string,
+  newStatus: ComplaintStatus,
+  adminRemarks?: string,
+  assignedTo?: string,
+  adminName?: string
+): Promise<Complaint | null> => {
+  const supabase = getSupabaseClient();
+
+  const basePayload: any = {
+    status: newStatus,
+    assigned_to: assignedTo?.trim() || null,
+    resolved_at:
+      newStatus === "Resolved"
+        ? new Date().toISOString()
+        : null,
+  };
+
+  // First try the plural database column.
+  let result = await supabase
+    .from("complaints")
+    .update({
+      ...basePayload,
+      admin_remarks: adminRemarks?.trim() || null,
+    })
+    .eq("id", complaintId)
+    .select()
+    .single();
+
+  // Some CampusCare database versions use admin_remark instead.
+  // Retry automatically if that is the case.
+  if (
+    result.error &&
+    result.error.message
+      .toLowerCase()
+      .includes("admin_remarks")
+  ) {
+    result = await supabase
+      .from("complaints")
+      .update({
+        ...basePayload,
+        admin_remark: adminRemarks?.trim() || null,
+      })
+      .eq("id", complaintId)
+      .select()
+      .single();
+  }
+
+  if (result.error) {
+    console.error(
+      "Error updating complaint:",
+      result.error.message
+    );
+
+    throw new Error(result.error.message);
+  }
+
+  if (!result.data) {
+    return null;
+  }
+
+  // Add status history if complaint_timeline exists.
+  try {
+    await supabase
+      .from("complaint_timeline")
+      .insert({
+        complaint_id: complaintId,
+        status: newStatus,
+        note: adminRemarks?.trim() || null,
+        action_by: adminName || "Facilities Admin",
+      });
+  } catch (timelineError) {
+    console.warn(
+      "Timeline could not be updated:",
+      timelineError
+    );
+  }
+
+  return mapDatabaseRowToComplaint(
+    result.data
+  );
+};
